@@ -1367,3 +1367,81 @@ java.io.FileNotFoundException: /tools/efinix/riscv-ide/Efinity-RISCV-IDE/configu
 
 !ENTRY org.eclipse.cdt.core 1 0 2024-07-24 18:31:39.116
 !MESSAGE Indexed 'evsoc_tinyml_ypd' (234 sources, 419 headers) in 4.22 sec: 42,789 declarations; 129,604 references; 429 unresolved inclusions; 212 syntax errors; 11,465 unresolved names (6.2%)
+!SESSION 2024-07-25 18:05:26.009 -----------------------------------------------
+eclipse.buildId=unknown
+java.version=18.0.1
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Framework arguments:  -clearPersistedState
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -clearPersistedState
+
+!ENTRY org.eclipse.equinox.preferences 4 4 2024-07-25 18:05:45.085
+!MESSAGE Exception saving preferences to: /tools/efinix/riscv-ide/Efinity-RISCV-IDE/configuration/.settings/org.eclipse.ui.ide.prefs.
+!STACK 0
+java.io.FileNotFoundException: /tools/efinix/riscv-ide/Efinity-RISCV-IDE/configuration/.settings/org.eclipse.ui.ide.prefs.bak (Permission denied)
+	at java.base/java.io.FileOutputStream.open0(Native Method)
+	at java.base/java.io.FileOutputStream.open(FileOutputStream.java:293)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:235)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:184)
+	at org.eclipse.core.internal.preferences.SafeFileOutputStream.<init>(SafeFileOutputStream.java:57)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.write(EclipsePreferences.java:281)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.save(EclipsePreferences.java:1075)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.save(EclipsePreferences.java:1051)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.internalFlush(EclipsePreferences.java:432)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.flush(EclipsePreferences.java:389)
+	at org.eclipse.ui.internal.ide.ChooseWorkspaceData.writePersistedData(ChooseWorkspaceData.java:275)
+	at org.eclipse.ui.internal.ide.application.IDEApplication.checkInstanceLocation(IDEApplication.java:314)
+	at org.eclipse.ui.internal.ide.application.IDEApplication.start(IDEApplication.java:142)
+	at org.eclipse.equinox.internal.app.EclipseAppHandle.run(EclipseAppHandle.java:203)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.runApplication(EclipseAppLauncher.java:136)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.start(EclipseAppLauncher.java:104)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:401)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:255)
+	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:577)
+	at org.eclipse.equinox.launcher.Main.invokeFramework(Main.java:659)
+	at org.eclipse.equinox.launcher.Main.basicRun(Main.java:596)
+	at org.eclipse.equinox.launcher.Main.run(Main.java:1467)
+	at org.eclipse.equinox.launcher.Main.main(Main.java:1440)
+
+!ENTRY org.eclipse.ui 4 4 2024-07-25 18:05:45.583
+!MESSAGE MenuAdditionCacheEntry.mergeIntoModel: Invalid menu URI: com.ashling.riscfree.efinix.newproject.wizard.CreateNewEfinixProject
+!SESSION 2024-07-25 18:12:30.637 -----------------------------------------------
+eclipse.buildId=unknown
+java.version=18.0.1
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=linux, ARCH=x86_64, WS=gtk, NL=en_US
+Framework arguments:  -clearPersistedState
+Command-line arguments:  -os linux -ws gtk -arch x86_64 -clearPersistedState
+
+!ENTRY org.eclipse.equinox.preferences 4 4 2024-07-25 18:12:45.233
+!MESSAGE Exception saving preferences to: /tools/efinix/riscv-ide/Efinity-RISCV-IDE/configuration/.settings/org.eclipse.ui.ide.prefs.
+!STACK 0
+java.io.FileNotFoundException: /tools/efinix/riscv-ide/Efinity-RISCV-IDE/configuration/.settings/org.eclipse.ui.ide.prefs.bak (Permission denied)
+	at java.base/java.io.FileOutputStream.open0(Native Method)
+	at java.base/java.io.FileOutputStream.open(FileOutputStream.java:293)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:235)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:184)
+	at org.eclipse.core.internal.preferences.SafeFileOutputStream.<init>(SafeFileOutputStream.java:57)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.write(EclipsePreferences.java:281)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.save(EclipsePreferences.java:1075)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.save(EclipsePreferences.java:1051)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.internalFlush(EclipsePreferences.java:432)
+	at org.eclipse.core.internal.preferences.EclipsePreferences.flush(EclipsePreferences.java:389)
+	at org.eclipse.ui.internal.ide.ChooseWorkspaceData.writePersistedData(ChooseWorkspaceData.java:275)
+	at org.eclipse.ui.internal.ide.application.IDEApplication.checkInstanceLocation(IDEApplication.java:314)
+	at org.eclipse.ui.internal.ide.application.IDEApplication.start(IDEApplication.java:142)
+	at org.eclipse.equinox.internal.app.EclipseAppHandle.run(EclipseAppHandle.java:203)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.runApplication(EclipseAppLauncher.java:136)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.start(EclipseAppLauncher.java:104)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:401)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:255)
+	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:577)
+	at org.eclipse.equinox.launcher.Main.invokeFramework(Main.java:659)
+	at org.eclipse.equinox.launcher.Main.basicRun(Main.java:596)
+	at org.eclipse.equinox.launcher.Main.run(Main.java:1467)
+	at org.eclipse.equinox.launcher.Main.main(Main.java:1440)
+
+!ENTRY org.eclipse.ui 4 4 2024-07-25 18:12:45.746
+!MESSAGE MenuAdditionCacheEntry.mergeIntoModel: Invalid menu URI: com.ashling.riscfree.efinix.newproject.wizard.CreateNewEfinixProject
