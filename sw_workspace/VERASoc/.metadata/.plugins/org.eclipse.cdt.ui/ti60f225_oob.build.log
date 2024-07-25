@@ -1,0 +1,51 @@
+13:54:42 **** Incremental Build of configuration Default for project ti60f225_oob ****
+make all 
+CC src/dma_video_stream.c
+In file included from src/dma_video_stream.c:7:
+../../../bsp/efinix/EfxSapphireSoc/app/i2cDemo.h:4: warning: "I2C_CTRL" redefined
+     #define I2C_CTRL SYSTEM_I2C_0_IO_CTRL
+ 
+In file included from src/dma_video_stream.c:2:
+src/userdef.h:22: note: this is the location of the previous definition
+ #define I2C_CTRL    SYSTEM_I2C_1_IO_CTRL
+ 
+src/dma_video_stream.c: In function 'dma_video_in_execution':
+src/userdef.h:61:20: error: 'IO_APB_SLAVE_1_APB' undeclared (first use in this function); did you mean 'IO_APB_SLAVE_3_APB'?
+ #define DMASG_BASE IO_APB_SLAVE_1_APB
+                    ^~~~~~~~~~~~~~~~~~
+src/dma_video_stream.c:106:16: note: in expansion of macro 'DMASG_BASE'
+  if(dmasg_busy(DMASG_BASE, DMASG_CHANNEL0))
+                ^~~~~~~~~~
+src/userdef.h:61:20: note: each undeclared identifier is reported only once for each function it appears in
+ #define DMASG_BASE IO_APB_SLAVE_1_APB
+                    ^~~~~~~~~~~~~~~~~~
+src/dma_video_stream.c:106:16: note: in expansion of macro 'DMASG_BASE'
+  if(dmasg_busy(DMASG_BASE, DMASG_CHANNEL0))
+                ^~~~~~~~~~
+src/dma_video_stream.c: In function 'dma_video_in_stop':
+src/userdef.h:61:20: error: 'IO_APB_SLAVE_1_APB' undeclared (first use in this function); did you mean 'IO_APB_SLAVE_3_APB'?
+ #define DMASG_BASE IO_APB_SLAVE_1_APB
+                    ^~~~~~~~~~~~~~~~~~
+src/dma_video_stream.c:143:13: note: in expansion of macro 'DMASG_BASE'
+  dmasg_stop(DMASG_BASE, DMASG_CHANNEL0);
+             ^~~~~~~~~~
+src/dma_video_stream.c: In function 'dma_video_out_stop':
+src/userdef.h:61:20: error: 'IO_APB_SLAVE_1_APB' undeclared (first use in this function); did you mean 'IO_APB_SLAVE_3_APB'?
+ #define DMASG_BASE IO_APB_SLAVE_1_APB
+                    ^~~~~~~~~~~~~~~~~~
+src/dma_video_stream.c:150:13: note: in expansion of macro 'DMASG_BASE'
+  dmasg_stop(DMASG_BASE, DMASG_CHANNEL1);
+             ^~~~~~~~~~
+src/dma_video_stream.c: In function 'dma_video_out_execution':
+src/userdef.h:61:20: error: 'IO_APB_SLAVE_1_APB' undeclared (first use in this function); did you mean 'IO_APB_SLAVE_3_APB'?
+ #define DMASG_BASE IO_APB_SLAVE_1_APB
+                    ^~~~~~~~~~~~~~~~~~
+src/dma_video_stream.c:155:16: note: in expansion of macro 'DMASG_BASE'
+  if(dmasg_busy(DMASG_BASE, DMASG_CHANNEL1))
+                ^~~~~~~~~~
+../common/standalone.mk:54: recipe for target 'build/obj_files/dma_video_stream.o' failed
+make: *** [build/obj_files/dma_video_stream.o] Error 1
+"make all" terminated with exit code 2. Build might be incomplete.
+
+13:54:42 Build Failed. 6 errors, 1 warnings. (took 125ms)
+

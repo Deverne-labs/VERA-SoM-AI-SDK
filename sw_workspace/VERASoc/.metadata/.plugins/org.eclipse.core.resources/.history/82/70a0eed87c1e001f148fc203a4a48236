@@ -1,0 +1,1087 @@
+////////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2013-2023 Efinix Inc. All rights reserved.              
+//
+// This   document  contains  proprietary information  which   is        
+// protected by  copyright. All rights  are reserved.  This notice       
+// refers to original work by Efinix, Inc. which may be derivitive       
+// of other work distributed under license of the authors.  In the       
+// case of derivative work, nothing in this notice overrides the         
+// original author's license agreement.  Where applicable, the           
+// original license agreement is included in it's original               
+// unmodified form immediately below this header.                        
+//                                                                       
+// WARRANTY DISCLAIMER.                                                  
+//     THE  DESIGN, CODE, OR INFORMATION ARE PROVIDED “AS IS” AND        
+//     EFINIX MAKES NO WARRANTIES, EXPRESS OR IMPLIED WITH               
+//     RESPECT THERETO, AND EXPRESSLY DISCLAIMS ANY IMPLIED WARRANTIES,  
+//     INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF          
+//     MERCHANTABILITY, NON-INFRINGEMENT AND FITNESS FOR A PARTICULAR    
+//     PURPOSE.  SOME STATES DO NOT ALLOW EXCLUSIONS OF AN IMPLIED       
+//     WARRANTY, SO THIS DISCLAIMER MAY NOT APPLY TO LICENSEE.           
+//                                                                       
+// LIMITATION OF LIABILITY.                                              
+//     NOTWITHSTANDING ANYTHING TO THE CONTRARY, EXCEPT FOR BODILY       
+//     INJURY, EFINIX SHALL NOT BE LIABLE WITH RESPECT TO ANY SUBJECT    
+//     MATTER OF THIS AGREEMENT UNDER TORT, CONTRACT, STRICT LIABILITY   
+//     OR ANY OTHER LEGAL OR EQUITABLE THEORY (I) FOR ANY INDIRECT,      
+//     SPECIAL, INCIDENTAL, EXEMPLARY OR CONSEQUENTIAL DAMAGES OF ANY    
+//     CHARACTER INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF      
+//     GOODWILL, DATA OR PROFIT, WORK STOPPAGE, OR COMPUTER FAILURE OR   
+//     MALFUNCTION, OR IN ANY EVENT (II) FOR ANY AMOUNT IN EXCESS, IN    
+//     THE AGGREGATE, OF THE FEE PAID BY LICENSEE TO EFINIX HEREUNDER    
+//     (OR, IF THE FEE HAS BEEN WAIVED, $100), EVEN IF EFINIX SHALL HAVE 
+//     BEEN INFORMED OF THE POSSIBILITY OF SUCH DAMAGES.  SOME STATES DO 
+//     NOT ALLOW THE EXCLUSION OR LIMITATION OF INCIDENTAL OR            
+//     CONSEQUENTIAL DAMAGES, SO THIS LIMITATION AND EXCLUSION MAY NOT   
+//     APPLY TO LICENSEE.                                                
+//
+////////////////////////////////////////////////////////////////////////////////
+#include <stdint.h>
+#include "bsp.h"
+#include "riscv.h"
+#include "gpio.h"
+#include "clint.h"
+#include "plic.h"
+
+#ifdef SIM
+    #define LOOP_UDELAY 100
+#else
+    #define LOOP_UDELAY 100000
+#endif
+
+void init();
+void main();
+void trap();
+void crash();
+void trap_entry();
+void externalInterrupt();
+/*
+void init(){
+    //configure PLIC
+    //cpu 0 accept all interrupts with priority above 0
+    plic_set_threshold(BSP_PLIC, BSP_PLIC_CPU_0, 0); 
+    plic_set_enable(BSP_PLIC, BSP_PLIC_CPU_0, SYSTEM_PLIC_SYSTEM_GPIO_0_IO_INTERRUPTS_0, 1);
+    plic_set_priority(BSP_PLIC, SYSTEM_PLIC_SYSTEM_GPIO_0_IO_INTERRUPTS_0, 1);
+    //Enable rising edge interrupts
+    gpio_setInterruptRiseEnable(GPIO0, 1); 
+    //enable interrupts
+    //Set the machine trap vector (../common/trap.S)
+    csr_write(mtvec, trap_entry); 
+    //Enable external interrupts
+    csr_set(mie, MIE_MEIE); 
+    csr_write(mstatus, MSTATUS_MPP | MSTATUS_MIE);
+}
+*/
+//Called by trap_entry on both exceptions and interrupts events
+void trap(){
+    int32_t mcause = csr_read(mcause);
+    int32_t interrupt = mcause < 0;    //Interrupt if true, exception if false
+    int32_t cause     = mcause & 0xF;
+    if(interrupt){
+        switch(cause){
+        case CAUSE_MACHINE_EXTERNAL: externalInterrupt(); break;
+        default: crash(); break;
+        }
+    } else {
+        crash();
+    }
+}
+
+void externalInterrupt(){
+    uint32_t claim;
+    //While there is pending interrupts
+    while(claim = plic_claim(BSP_PLIC, BSP_PLIC_CPU_0)){
+        switch(claim){
+        case SYSTEM_PLIC_SYSTEM_GPIO_0_IO_INTERRUPTS_0: bsp_printf("gpio 0 interrupt routine \r\n"); break;
+        default: crash(); break;
+        }
+        //unmask the claimed interrupt
+        plic_release(BSP_PLIC, BSP_PLIC_CPU_0, claim); 
+    }
+}
+
+//Used on unexpected trap/interrupt codes
+void crash(){
+    bsp_printf("\r\n*** CRASH ***\r\n");
+    while(1);
+}
+
+/*void main() {
+    bsp_init();
+    bsp_printf("gpio 0 demo ! \r\n");
+    bsp_printf("onboard LEDs blinking \r\n");
+    //configure 4 bits gpio 0
+    gpio_setOutputEnable(GPIO0, 0xe);
+    gpio_setOutput(GPIO0, 0x0);
+    for (int i=0; i<50; i=i+1) {
+        gpio_setOutput(GPIO0, gpio_getOutput(GPIO0) ^ 0xe);
+        bsp_uDelay(LOOP_UDELAY);
+    }   
+    bsp_printf("gpio 0 interrupt demo ! \r\n");
+    bsp_printf("Ti180 press and release onboard button sw4 \r\n");
+    bsp_printf("Ti60 press and release onboard button sw6 \r\n");
+    bsp_printf("T120 press and release onboard button sw7 \r\n");
+    init();
+    while(1); 
+}*/
+
+
+//VDMA driver
+#include "vdma_driver.h"
+#include "csr_offsets.h"
+#include "dmasg.h"
+#include "common.h"
+#include "PiCamDriver.h"
+//#include "intc.h"
+
+#define DMASG_BASE            IO_APB_SLAVE_0_INPUT
+#define DMASG_BITMAP_MM2S_CHANNEL      0 //4
+#define DMASG_BITMAP_MM2S_PORT         0
+#define DMASG_LUT_TON_MM2S_CHANNEL     1
+#define DMASG_LUT_TON_MM2S_PORT        0
+#define DMASG_IMG_96x96_MM2S_CHANNEL   2
+#define DMASG_IMG_96x96_MM2S_PORT      0
+
+uint8_t cam_s2mm_active=0;
+uint8_t display_mm2s_active=0;
+
+#define SCALE 1
+#define CLASSES 1
+#define TOTAL_ANCHORS 3
+#define NET_HEIGHT 96
+#define NET_WIDTH 96
+#define OBJECTNESS_THRESHOLD 0.25
+#define IOU_THRESHOLD 0.5
+
+#define YOLO_PICO_INPUT_BYTES 96*96*4
+
+#define FRAME_WIDTH     1280 //640
+#define FRAME_HEIGHT    720 //360
+
+#define OUT_FRAME_WIDTH  1280 //640
+#define OUT_FRAME_HEIGHT 720 //360
+#define OUT_FRAME_SIZE   OUT_FRAME_WIDTH*OUT_FRAME_HEIGHT*4
+
+#define IN_FRAME_WIDTH  1280 //640
+#define IN_FRAME_HEIGHT 720 //640
+#define IN_FRAME_SIZE   IN_FRAME_WIDTH*IN_FRAME_HEIGHT*4
+
+#define BITMAP_FRAME_WIDTH  1280 //640
+#define BITMAP_FRAME_HEIGHT 720 //360
+#define BITMAP_FRAME_SIZE   BITMAP_FRAME_WIDTH*BITMAP_FRAME_HEIGHT/8
+
+#define LUT_TON_SIZE	1024
+
+
+
+#define FRAME_W 1280 //640
+#define FRAME_H 720  //640
+
+#define ROI_W FRAME_W/2
+#define ROI_H FRAME_H/2
+
+#define FRAME_SIZE (FRAME_W*FRAME_H/4)
+#define FRAME1_ADDR mem
+#define FRAME2_ADDR mem+FRAME_SIZE
+
+
+
+//Set to 4 for multi-buffering; Set to 1 for single buffering (shared for camera frame capture, display, and tinyML pre-processing input).
+#define NUM_BUFFER   4
+//Start address to be divided evenly by 8. Otherwise DMA tkeep might be shifted, not handled in display and hw_accel blocks.
+//BUFFER_START_ADDR should not overlap with memory space allocated for RISC-V program (default.ld)
+#define BUFFER0_START_ADDR        0x01100000
+#define BUFFER1_START_ADDR        0x01100000
+#define BUFFER2_START_ADDR        0x01100000
+//Memory gap between BUFFER_START_ADDR and TINYML_INPUT_START_ADDR must sufficient to accommate NUM_BUFFER*FRAME_WIDTH*FRAME_HEIGHT*4 bytes data
+#define TINYML_INPUT_START_ADDR  0x01600000
+
+#define BITMAP_START_ADDR         0x01A00000
+#define LUT_TON_START_ADDR        0x01571000
+
+#define BBOX_MAX 4
+#define BBOX_CMD_ADDRESS   0x02000000
+//The box buffer consist of command , data , and dummy data as padding to ensure that the total data transfer is always even
+//DMA controller perform 128-bit word transfer, and our DMA channel will transfer 64-bit word to annotator
+//Each transfer initiated from DMA controller will be 128-bit word, thus we need to ensure an even number of transfer
+#define TOTAL_BOX_BUFFER   8 + (BBOX_MAX*8) + 8
+#define bbox_array ((volatile uint64_t*)BBOX_CMD_ADDRESS)
+
+#define IMAGE_SIZE (IN_FRAME_WIDTH*IN_FRAME_HEIGHT)*4
+#define IMAGE_CMD_OFFSET (0)
+#define IMAGE_START_OFFSET (IMAGE_CMD_OFFSET + 8)
+#define IMAGE_END_OFFSET (IMAGE_START_OFFSET + IMAGE_SIZE)
+// The image consists of command, data and dummy data to ensure total data transfer is even , following DMA controller spec.
+#define IMAGE_DUMMY_OFFSET (IMAGE_END_OFFSET + 8)
+#define TOTAL_BUFFER_SIZE (IMAGE_DUMMY_OFFSET - IMAGE_CMD_OFFSET)
+
+
+#define buffer0_array       ((uint32_t*)BUFFER0_START_ADDR)
+#define buffer1_array       ((uint32_t*)BUFFER1_START_ADDR)
+#define buffer2_array       ((uint32_t*)BUFFER2_START_ADDR)
+#define tinyml_input_array ((volatile uint8_t*)TINYML_INPUT_START_ADDR)
+
+#define bitmap_array    ((volatile uint8_t*)BITMAP_START_ADDR)
+#define lut_ton_array   ((volatile uint16_t*)LUT_TON_START_ADDR)
+
+
+
+uint8_t camera_buffer = 0;
+uint8_t display_buffer = 0;
+uint8_t next_display_buffer = 0;
+uint8_t draw_buffer = 0;
+uint8_t bbox_overlay_busy = 0;
+uint8_t bbox_overlay_updated = 0;
+
+uint8_t bitmap_buffer = 0;
+
+
+void dma_init()
+{
+   plic_set_threshold(BSP_PLIC, BSP_PLIC_CPU_0, 0); //cpu 0 accept all interrupts with priority above 0
+
+   //enable PLIC DMASG channel 0 interrupt listening (But for the demo, we enable the DMASG internal interrupts later)
+  // plic_set_enable(BSP_PLIC, BSP_PLIC_CPU_0, SYSTEM_PLIC_USER_INTERRUPT_B_INTERRUPT, 1);
+  // plic_set_priority(BSP_PLIC, SYSTEM_PLIC_USER_INTERRUPT_B_INTERRUPT, 1);
+
+    //enable SYSTEM_PLIC_USER_INTERRUPT_A_INTERRUPT rising edge interrupt
+    plic_set_enable(BSP_PLIC, BSP_PLIC_CPU_0, SYSTEM_PLIC_USER_INTERRUPT_A_INTERRUPT, 1);
+    plic_set_priority(BSP_PLIC, SYSTEM_PLIC_USER_INTERRUPT_A_INTERRUPT, 1);
+
+    //enable riscV interrupts
+    csr_write(mtvec, trap_entry); //Set the machine trap vector (../common/trap.S)
+//  csr_set(mie, MIE_MTIE | MIE_MEIE); //Enable machine timer and external interrupts
+    csr_set(mie, MIE_MEIE); //Enable machine timer and external interrupts
+    csr_write(mstatus, MSTATUS_MPP | MSTATUS_MIE);
+}
+
+
+u32 vdma_read_resetn(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_RSTN_ADDR);
+}
+void vdma_write_resetn(int data){
+	write_u32(data,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_RSTN_ADDR);
+}
+
+
+u32 vdma_read_start_mm2s(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_START_VDMA_MM2S_ADDR);
+}
+void vdma_write_start_mm2s(int data){
+	write_u32(data,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_START_VDMA_MM2S_ADDR);
+}
+
+
+u32 vdma_read_start_s2mm(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_START_VDMA_S2MM_ADDR);
+}
+void vdma_write_start_s2mm(int data){
+	write_u32(data,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_START_VDMA_S2MM_ADDR);
+}
+
+
+u32 vdma_read_image_w(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_VDMA_IMAGE_W_ADDR);
+}
+void vdma_write_image_w(int data){
+	write_u32(data,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_VDMA_IMAGE_W_ADDR);
+}
+
+
+u32 vdma_read_image_h(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_VDMA_IMAGE_H_ADDR);
+}
+void vdma_write_image_h(int data){
+	write_u32(data,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_VDMA_IMAGE_H_ADDR);
+}
+
+
+u32 vdma_read_buffer0(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER0_ADDR);
+}
+void vdma_write_buffer0(uint32_t *framebuffer){
+	write_u32((u32)framebuffer,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER0_ADDR);
+}
+
+
+u32 vdma_read_buffer1(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER1_ADDR);
+}
+void vdma_write_buffer1(uint32_t *framebuffer){
+	write_u32((u32)framebuffer,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER1_ADDR);
+}
+
+
+u32 vdma_read_buffer2(){
+	return read_u32(IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER2_ADDR);
+}
+void vdma_write_buffer2(uint32_t *framebuffer){
+	write_u32((u32)framebuffer,IO_APB_SLAVE_4_INPUT+CSR_ADDREGSPACE_REG_ADDR_BUFFER2_ADDR);
+}
+
+
+
+
+
+
+
+u32 buf(u32 i) {
+   return BUFFER0_START_ADDR +  TOTAL_BUFFER_SIZE*i;
+}
+
+static void flush_data_cache(){
+   asm(".word(0x500F)");
+}
+
+u32 buf_offset(u32 i, u32 offset)
+{
+    return buf(i) + offset;
+}
+
+char* buf_offset_char(u32 i, u32 offset)
+{
+    return (char*)buf_offset(i, offset);
+}
+
+u32* buf_offset_u32(u32 i, u32 offset)
+{
+    return (u32*)buf_offset(i, offset);
+}
+
+u64* buf_offset_u64(u32 i, u32 offset)
+{
+    return (u64*)buf_offset(i, offset);
+}
+
+void send_dma(u32 channel, u32 port, u32 addr, u32 size, int interrupt, int wait, int self_restart) {
+   dmasg_input_memory(DMASG_BASE, channel, addr, 16);
+   dmasg_output_stream(DMASG_BASE, channel, port, 0, 0, 1);
+
+   if(interrupt) {
+      dmasg_interrupt_config(DMASG_BASE, channel, DMASG_CHANNEL_INTERRUPT_CHANNEL_COMPLETION_MASK);
+   }
+
+   if(self_restart) {
+      dmasg_direct_start(DMASG_BASE, channel, size, 1);
+   } else {
+      dmasg_direct_start(DMASG_BASE, channel, size, 0);
+   }
+
+   if(wait) {
+      while(dmasg_busy(DMASG_BASE, channel));
+      flush_data_cache();
+   }
+}
+
+void recv_dma(u32 channel, u32 port, u32 addr, u32 size, int interrupt, int wait, int self_restart) {
+   dmasg_input_stream(DMASG_BASE, channel, port, 1, 0);
+   dmasg_output_memory(DMASG_BASE, channel, addr, 16);
+
+   if(interrupt){
+      dmasg_interrupt_config(DMASG_BASE, channel, DMASG_CHANNEL_INTERRUPT_CHANNEL_COMPLETION_MASK);
+   }
+
+   if(self_restart) {
+      dmasg_direct_start(DMASG_BASE, channel, size, 1);
+   } else {
+      dmasg_direct_start(DMASG_BASE, channel, size, 0);
+   }
+
+   if(wait){
+      while(dmasg_busy(DMASG_BASE, channel));
+      flush_data_cache();
+   }
+}
+
+void trigger_next_display_dma() {
+}
+
+void trigger_next_box_dma() {
+
+}
+
+void trigger_next_cam_dma() {
+
+}
+
+
+void color_pattern(volatile u32* buf){
+   for (int y=0; y<IN_FRAME_HEIGHT; y++) {
+     for (int x=0; x<IN_FRAME_WIDTH; x++) {
+
+      if(x < (IN_FRAME_WIDTH/4)){
+         buf [y*IN_FRAME_WIDTH + x] = 0x00FFFFFF; //RED
+      }
+      else if(x < (IN_FRAME_WIDTH/4)*2){
+         buf [y*IN_FRAME_WIDTH + x] = 0x00707070; //GREEN
+      }
+      else if(x < (IN_FRAME_WIDTH/4)*3){
+         buf [y*IN_FRAME_WIDTH + x] = 0x00A0A0A0; //BLUE
+      }
+      else{
+         buf [y*IN_FRAME_WIDTH + x] = 0x00000000; //WHITE
+      }
+      buf[0] = 0x00FF00FF;
+      buf[1] = 0x00DD00DD;
+
+     }
+   }
+}
+
+
+
+void reset_bitmap(){
+   uint32_t *buffer = (uint32_t *)BITMAP_START_ADDR;
+   for(int i = 0 ; i < BITMAP_FRAME_HEIGHT; i++){
+      for(int j = 0 ; j < BITMAP_FRAME_WIDTH/32; j++){
+         buffer[i*(BITMAP_FRAME_WIDTH/32) + j] = 0x00;
+      }
+   }
+}
+
+void patern_bitmap(){
+   reset_bitmap();
+
+   uint8_t *buffer = (uint8_t *)BITMAP_START_ADDR;
+   uint8_t max_val_bm = 0xFF;
+   for(int i = 0 ; i < BITMAP_FRAME_HEIGHT; i++){
+      for(int j = 0 ; j < BITMAP_FRAME_WIDTH/8; j++){
+         if((i == 10) || (i == 350))
+            buffer[i*(BITMAP_FRAME_WIDTH/8) + j] = max_val_bm;
+         else
+            buffer[i*(BITMAP_FRAME_WIDTH/8) + j] = 0x00;
+      }
+   }
+}
+
+
+void reset_lut_ton(){
+   uint16_t *buffer = (uint16_t *)LUT_TON_START_ADDR;
+   for(int i = 0 ; i < LUT_TON_SIZE; i++){
+	    buffer[i] = 0x0000;
+   }
+}
+
+void patern_lut_ton(){
+   uint16_t *buffer = (uint16_t *)LUT_TON_START_ADDR;
+   for(int i = 0 ; i < LUT_TON_SIZE; i++){
+		buffer[i] = (uint16_t)i;
+   }
+}
+
+void print_buffer(volatile u32* buf){
+   for (int y=0; y<200; y++) {
+     for (int x=0; x<OUT_FRAME_WIDTH; x++) {
+       int green =  (buf[y*OUT_FRAME_WIDTH + x] & 0x0000FF00)>>8;
+       bsp_printf("%d ",green);
+     }
+     bsp_printf("\n\r ");
+   }
+}
+
+void print_img_downscaled(volatile u32* buf){
+   int px;
+   for (int y=0; y<96; y++) {
+	 for (int x=0; x<96/4; x++) {
+	   px =  (buf[y*OUT_FRAME_WIDTH + x] & 0x000000FF)>>0;
+	   bsp_printf("%d ",px);
+	   px =  (buf[y*OUT_FRAME_WIDTH + x] & 0x0000FF00)>>8;
+	   bsp_printf("%d ",px);
+	   px =  (buf[y*OUT_FRAME_WIDTH + x] & 0x00FF0000)>>16;
+	   bsp_printf("%d ",px);
+	   px =  (buf[y*OUT_FRAME_WIDTH + x] & 0xFF000000)>>24;
+	   bsp_printf("%d ",px);
+	 }
+	 bsp_printf("\n\r ");
+   }
+}
+
+
+
+void init_image(void)
+{
+    //color_pattern(buf_offset_u32(display_buffer, IMAGE_START_OFFSET));
+    color_pattern((u32*)BUFFER0_START_ADDR);
+    color_pattern((u32*)BUFFER1_START_ADDR);
+    color_pattern((u32*)BUFFER2_START_ADDR);
+}
+
+
+
+
+void init() {
+   /************************************************************SETUP PICAM************************************************************/
+
+   bsp_printf("Camera Setting...");
+   //Camera I2C configuration
+   mipi_i2c_init();
+   //PiCam_init();
+
+
+   bsp_printf("Done\n\r");
+
+   //Indicate camera configuration done
+  // EXAMPLE_APB3_REGW(EXAMPLE_APB3_SLV, EXAMPLE_APB3_SLV_REG1_OFFSET, 0x00000001);
+   bsp_printf("Done\n\r");
+
+   bsp_printf("Done\n\r");
+
+
+
+   vdma_write_resetn(0);
+   vdma_write_resetn(1);
+
+   //reset rx pipeline
+   write_u32(0,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_RSTN_ADDR);
+   //msDelay(200);
+   write_u32(1,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_RSTN_ADDR);
+
+
+   //Config RX pipeline
+   write_u32(1280 ,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_WIDTH_ADDR          );
+   write_u32(720  ,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_HEIGHT_ADDR         );
+   write_u32(0    ,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_GAMMA_EN_UPDATE_ADDR);
+   write_u32(1    ,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_GAMMA_EN_BYPASS_ADDR);
+   write_u32(0x200,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_UNBAYER_R_GAIN_ADDR );
+   write_u32(0x200,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_UNBAYER_G_GAIN_ADDR );
+   write_u32(0x200,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_UNBAYER_B_GAIN_ADDR );
+
+   write_u32(280,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_DOWNSCALE_OFFSET_X_ADDR );
+   write_u32(7,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_DOWNSCALE_RATIO_ADDR );
+   write_u32(945,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_DOWNSCALE_IMAGE_IN_X_MAX_ADDR );
+   write_u32(665,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_DOWNSCALE_IMAGE_IN_Y_MAX_ADDR );
+
+   write_u32(1    ,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_START_ADDR );
+
+   /*************************************************************SETUP DMA*************************************************************/
+
+   bsp_printf("DMA Setting...");
+   dma_init();
+
+  // dmasg_priority(DMASG_BASE, DMASG_HW_ACCEL_MM2S_CHANNEL, 0, 0);
+  // dmasg_priority(DMASG_BASE, DMASG_HW_ACCEL_S2MM_CHANNEL, 0, 0);
+  // dmasg_priority(DMASG_BASE, DMASG_DISPLAY_MM2S_CHANNEL,  3, 0);
+   dmasg_priority(DMASG_BASE, DMASG_BITMAP_MM2S_CHANNEL,    1, 0);
+   dmasg_priority(DMASG_BASE, DMASG_LUT_TON_MM2S_CHANNEL,   1, 0);
+   dmasg_priority(DMASG_BASE, DMASG_IMG_96x96_MM2S_CHANNEL, 2, 0);
+  // dmasg_priority(DMASG_BASE, DMASG_CAM_S2MM_CHANNEL,      0, 0);
+
+   bsp_printf("Done\n\r");
+
+   /*************************************************************SETUP VDMA*************************************************************/
+
+   vdma_write_image_w(FRAME_WIDTH);
+   vdma_write_image_h(FRAME_HEIGHT);
+
+   vdma_write_buffer0(buffer0_array);
+   vdma_write_buffer1(buffer1_array);
+   vdma_write_buffer2(buffer2_array);
+
+
+   recv_dma(DMASG_IMG_96x96_MM2S_CHANNEL, DMASG_IMG_96x96_MM2S_PORT, TINYML_INPUT_START_ADDR, YOLO_PICO_INPUT_BYTES, 0, 0, 1);
+
+
+   vdma_write_start_s2mm(1);
+
+
+	PCam5C_init();
+
+	PCam5C_config();
+	PCam5C_set_awb();
+
+
+   /***********************************************************TRIGGER DISPLAY*******************************************************/
+
+   bsp_printf("Initialize display memory content...");
+
+   //Initialize test image in buffer_array (default buffer 0)
+   init_image();
+   patern_bitmap();
+   patern_lut_ton();
+
+   send_dma(DMASG_LUT_TON_MM2S_CHANNEL, DMASG_LUT_TON_MM2S_PORT,LUT_TON_START_ADDR, LUT_TON_SIZE, 0, 0, 1);
+
+
+   bsp_printf("Done\n\r");
+   //Initialize bbox_overlay_buffer - Trigger DMA for initialized bbox_overlay_buffer content to display annotator module!!!
+   //bsp_printf("Initialize Bbox to invalid ...");
+   //init_bbox();
+   //bsp_printf("Done\n\r");
+   //Trigger display DMA once then the rest handled by interrupt sub-rountine
+
+
+   /*********************************************************TRIGGER CAMERA CAPTURE*****************************************************/
+
+   //SELECT RGB or grayscale output from camera pre-processing block.
+  // EXAMPLE_APB3_REGW(EXAMPLE_APB3_SLV, EXAMPLE_APB3_SLV_REG3_OFFSET, 0x00000000);   //RGB
+
+   //Trigger camera DMA once then the rest handled by interrupt sub-rountine
+   bsp_printf("Trigger camera DMA...");
+   //msDelay(5000);
+
+
+//recv_dma(DMASG_CAM_S2MM_CHANNEL, DMASG_CAM_S2MM_PORT, buf(display_buffer), 640*640*4, 1, 0, 1); //buf_offset(camera_buffer, IMAGE_START_OFFSET)
+   cam_s2mm_active = 1;
+
+
+
+   bsp_printf("Done\n\r");
+
+
+}
+
+
+#include "gpio.h"
+#include "soc.h"
+#include "compatibility.h"
+#include "i2c.h"
+#include "common.h"
+#include "fb.h"
+
+uint32_t framebuffer[1*1*3];
+
+
+#ifdef SYSTEM_GPIO_0_IO_CTRL
+    #define GPIO0       SYSTEM_GPIO_0_IO_CTRL
+#endif
+
+
+#define CLOK_15x1503_MMAP_LEN 64
+//External Clock generator utils
+#define CLOCK_GEN_BAR 0x68
+
+#define APB3_REGW(addr, offset, data) \
+   write_u32(data, addr+offset)
+
+#define APB3_REGR(addr, offset) \
+   read_u32(addr+offset)
+
+u16* raw_video_frmb    = (u16*)0x41000000; //video frame buffer input
+
+
+#define I2C_CTRL_HZ SYSTEM_CLINT_HZ
+
+
+void busy_wait(int delay){
+   msDelay(delay);
+}
+
+
+struct media_profile_struct{
+   uint32_t h_active;
+   uint32_t h_blanking;
+   uint32_t h_sync_offset;
+   uint32_t h_sync_width;
+   uint32_t v_active;
+   uint32_t v_blanking;
+   uint32_t v_sync_offset;
+   uint32_t v_sync_width;
+   const u8* clok_gen_config;
+   uint16_t clock_freq_decimal;
+   uint16_t clock_freq_fractional;
+   uint8_t  upscale_mode;
+};
+
+const u8 config_53_Mhz_mmap[CLOK_15x1503_MMAP_LEN] = {
+   0xc0,
+   0x80,
+   0x10,
+   0x00,
+   0x00,
+   0x1a,
+   0x80,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x1a,
+   0x08,
+   0x0a,
+   0x06,
+   0x40,
+   0x93,
+   0xfe,
+   0xc0,
+   0x10,
+   0x83,
+   0x19,
+   0xc1,
+   0xd4,
+   0xff,
+   0x90,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0xa4,
+   0x66,
+   0xa7,
+   0x0c,
+   0x14,
+   0x1b,
+   0x00,
+   0x00,
+   0xc0,
+   0x00,
+   0x00,
+   0x04,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00
+};
+const u8 config_40Mhz_mmap[CLOK_15x1503_MMAP_LEN] = {
+   0xc0,
+   0x80,
+   0x10,
+   0x00,
+   0x00,
+   0x3c,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x1a,
+   0x09,
+   0x0a,
+   0x0e,
+   0x10,
+   0x93,
+   0xd6,
+   0xc0,
+   0x10,
+   0x83,
+   0x19,
+   0xc1,
+   0xd4,
+   0xff,
+   0x90,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0xa4,
+   0x66,
+   0xa7,
+   0x0c,
+   0x14,
+   0x1b,
+   0x00,
+   0x00,
+   0xc0,
+   0x00,
+   0x00,
+   0x04,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00
+};
+
+const u8 config_25_125Mhz_mmap[CLOK_15x1503_MMAP_LEN] = {
+   0xc0,
+   0x80,
+   0x10,
+   0x00,
+   0x00,
+   0x19,
+   0x20,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x1a,
+   0x08,
+   0x0a,
+   0x46,
+   0x40,
+   0x93,
+   0xfe,
+   0xc0,
+   0x10,
+   0x83,
+   0x19,
+   0xc1,
+   0xd4,
+   0xff,
+   0x90,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0xa4,
+   0x66,
+   0xa7,
+   0x0c,
+   0x14,
+   0x1b,
+   0x00,
+   0x00,
+   0xc0,
+   0x00,
+   0x00,
+   0x04,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00,
+   0x00
+};
+
+
+//"h_active", "h_blanking", "h_sync_offset", "h_sync_width", "v_active", "v_blanking", "v_sync_offset", "v_sync_width"
+
+
+struct media_profile_struct m_config[] = {
+   {1280,370,110,40,720,30,5,5,config_53_Mhz_mmap, 74,25,     0},    //config_1280x720
+   {1280,370,110,40,720,30,5,5,config_53_Mhz_mmap, 74,25,     1},    //config_1280x720
+   {1280,160,48,32,720,17,3,5,config_53_Mhz_mmap, 53,00,     1},    //config_1280x720
+   {800,256,40,128,600,28,1,4,config_40Mhz_mmap, 40,00,      0},    //config_800x600 upscale active
+   {800,256,40,128,600,28,1,4,config_40Mhz_mmap, 40,00,      1},    //config_800x600
+   {640,160,16,96,480,45,10,2,config_25_125Mhz_mmap, 25,125, 0},    //config_640x480 upscale active
+   {640,160,16,96,480,45,10,2,config_25_125Mhz_mmap, 25,125, 1}     //config_640x480 upscale bypassed
+};
+
+
+int curr_media_idx = 1 ; //0
+
+
+void restart_clock_gen(){
+
+   gpio_setOutput(GPIO0, 0x0);
+   msDelay(100);        //waite for 100ms
+   gpio_setOutput(GPIO0, 0x1);
+
+
+}
+
+
+int ClockGen_WriteRegData(u8 reg,u8 data)
+{
+   u8 outdata;
+
+   u32 reg_i2c = SYSTEM_I2C_1_IO_CTRL;
+   u8 slaveAddr = 0xD0;
+   u8 regAddr = reg;
+   u32 length = 1;
+   u8 data_write = {data};
+
+   i2c_writeData_b(reg_i2c, slaveAddr, regAddr, &data_write, length);
+
+
+   return 0;
+}
+
+
+u8 ClockGen_ReadRegData(u16 reg)
+{
+   u8 outdata;
+
+   u32 reg_i2c = SYSTEM_I2C_1_IO_CTRL;
+   u8 slaveAddr = 0xD0;
+   u8 regAddr = reg;
+   u32 length = 1; //lecture d'un seul registre
+   u8* data_read ;
+
+   i2c_readData_b(reg_i2c, slaveAddr, regAddr, data_read, length);
+   outdata = data_read[0];
+   return outdata;
+}
+
+void ClockGen_i2c_init(){
+
+    //I2C init
+    I2c_Config i2c_mipi;
+    i2c_mipi.samplingClockDivider = 3;
+    i2c_mipi.timeout = I2C_CTRL_HZ/1000;
+    i2c_mipi.tsuDat  = I2C_CTRL_HZ/2000000;
+
+    i2c_mipi.tLow  = I2C_CTRL_HZ/800000;
+    i2c_mipi.tHigh = I2C_CTRL_HZ/800000;
+    i2c_mipi.tBuf  = I2C_CTRL_HZ/400000;
+
+    i2c_applyConfig(SYSTEM_I2C_1_IO_CTRL, &i2c_mipi);
+
+}
+
+
+
+
+void config_pipe(int media_idx){
+
+   uint32_t fifo_level = 1024;
+   uint32_t fifo_level_i = 1024;
+   uint32_t fifo_level_out = 1024;
+
+   int hres = m_config[media_idx].h_active ;
+   int hsync_start = m_config[media_idx].h_active + m_config[media_idx].h_sync_offset;    //640+16;   //656
+   int hsync_end = m_config[media_idx].h_active + m_config[media_idx].h_sync_offset + m_config[media_idx].h_sync_width;     // 640+16+96;  //752
+   int hscan = m_config[media_idx].h_active + m_config[media_idx].h_blanking - 1;   //640+160-1;      //799
+
+   int vres = m_config[media_idx].v_active;
+   int vsync_start = m_config[media_idx].v_active + m_config[media_idx].v_sync_offset;  //480+10;  //490
+   int vsync_end = m_config[media_idx].v_active + m_config[media_idx].v_sync_offset + m_config[media_idx].v_sync_width;   // 480+10+2;  //492
+   int vscan = m_config[media_idx].v_active + m_config[media_idx].v_blanking - 1;   //480+45-1;      //524
+
+
+
+
+   //reset tx pipeline
+   write_u32(0,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_RSTN_ADDR);
+   //msDelay(200);
+   write_u32(1,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_RSTN_ADDR);
+
+
+   //upscale
+   if(m_config[media_idx].upscale_mode == 0){
+      //upscale active
+      write_u32(m_config[media_idx].h_active/2,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_WIDTH_ADDR);
+      write_u32(m_config[media_idx].v_active/2,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_HEIGHT_ADDR);
+   }else{
+      //bypass upscale
+      write_u32(m_config[media_idx].h_active,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_WIDTH_ADDR);
+      write_u32(m_config[media_idx].v_active,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_HEIGHT_ADDR);
+   }
+   //write_u32(m_config[media_idx].upscale_mode,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_BYPASS_UPSCALE_ADDR);
+
+   bsp_printf("Upscale input : h_active = %d, v_active = %d\n\r",read_u32(IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_WIDTH_ADDR),read_u32(IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_HEIGHT_ADDR));
+   //bsp_printf("Upscale bypass = %d\n\r",read_u32(IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_BYPASS_UPSCALE_ADDR));
+
+
+
+   //VTG
+   write_u32(hres,IO_APB_SLAVE_3_INPUT+CSR_VTG_HRES_ADDR);
+   write_u32(hsync_start,IO_APB_SLAVE_3_INPUT+CSR_VTG_HSYNC_START_ADDR);
+   write_u32(hsync_end,IO_APB_SLAVE_3_INPUT+CSR_VTG_HSYNC_END_ADDR);
+   write_u32(hscan,IO_APB_SLAVE_3_INPUT+CSR_VTG_HSCAN_ADDR);
+
+   write_u32(vres,IO_APB_SLAVE_3_INPUT+CSR_VTG_VRES_ADDR);
+   write_u32(vsync_start,IO_APB_SLAVE_3_INPUT+CSR_VTG_VSYNC_START_ADDR);
+   write_u32(vsync_end,IO_APB_SLAVE_3_INPUT+CSR_VTG_VSYNC_END_ADDR);
+   write_u32(vscan,IO_APB_SLAVE_3_INPUT+CSR_VTG_VSCAN_ADDR);
+
+   //start tx pipeline
+   write_u32(1,IO_APB_SLAVE_3_INPUT+CSR_TXPIPELINE_START_ADDR);
+
+   //vdma_write_start_mm2s(1); //dma_video_out_execution(framebuffer);
+
+
+   //dma_video_out_execution(framebuffer);
+   bsp_printf("Trigger display DMA...");
+
+
+   //send_dma(DMASG_DISPLAY_MM2S_CHANNEL, DMASG_DISPLAY_MM2S_PORT,buf(display_buffer), OUT_FRAME_SIZE, 0, 0, 1);
+   send_dma(DMASG_BITMAP_MM2S_CHANNEL, DMASG_BITMAP_MM2S_PORT,BITMAP_START_ADDR, BITMAP_FRAME_SIZE, 0, 0, 1);
+   display_mm2s_active = 1;
+   bsp_printf("Done\n\r");
+
+
+
+   //wait for fifo to fillup
+   bsp_printf("fill fifo\n\r");
+   msDelay(500);
+   fifo_level = 0;fifo_level_i =0;fifo_level_out = 0;
+
+   /*while(fifo_level_out < 500 ){
+  // while(fifo_level < 500 || fifo_level_i < 30){
+      //fifo_level = fb_fifo_level_read();
+      //fifo_level_i = fb_fifo_i_level_read();
+      fifo_level_out = fb_fifo_out_level_read();
+      // fifo_level_bitmap = fb_fifo_bitmap_level_read();
+      // bsp_printf("fifo_level : %d /fifo_level_i : %d /fifo_level_bm : %d\n\r", fifo_level, fifo_level_i, fifo_level_out);
+      bsp_printf("fifo_level : %d \n\r",fifo_level_out);
+      msDelay(100);
+   }*/
+
+
+   //msDelay(10000);
+   //enable vtg
+   write_u32(1,IO_APB_SLAVE_3_INPUT+CSR_VTG_ENABLE_ADDR);
+   bsp_printf("start vtg\n\r");
+
+   bsp_printf("end start config %d\n\r",media_idx);
+
+}
+
+//END USER include
+
+void main() {
+   bsp_init();
+   bsp_printf("\t--Hello Efinix Edge Vision TinyML--\n\r");
+   //ClockGen_i2c_init();
+   //configure_clock(curr_media_idx);
+
+   u32 rdata;
+   init();
+   config_pipe(curr_media_idx);
+
+
+   //For timestamp
+   uint64_t timerCmp0, timerCmp1, timerDiff_0_1;
+   uint64_t timerCmp2, timerCmp3, timerDiff_2_3;
+   u32 ms;
+   bbox_overlay_updated = 0;
+
+   char str;
+   str = uart_read(BSP_UART_TERMINAL);
+   print_buffer(buffer0_array);
+
+   str = uart_read(BSP_UART_TERMINAL);
+   int first_loop=1;
+}
+
+
